@@ -75,3 +75,43 @@ solve legal compliance automatically.
 5. Evaluate coverage and quality across languages/domains with human labels.
 6. Run fixed-budget model training ablations and statistical confidence checks.
 7. Document data composition, versions and model-training evidence.
+
+
+## v0.2 governance and empirical measurement
+
+New `ADA Provenance Lattice` capabilities:
+
+1. **Rights policy v2.** Evidence fingerprint, reviewer identity/date, allowed
+   uses, commercial/redistribution flags, and date-pinned expiry checks. This
+   enforces presence and consistency of operator declarations, not their truth.
+   V1 remains a documented legacy path for existing test fixtures.
+2. **Revocation snapshots.** Independent output directories, manifest hash
+   lineage, validated parent, strict SHA-256/doc-id tombstones and content-free
+   removal receipts. Published parents remain unchanged, so downstream and
+   ancestor removal is a separate operational task. Evidence of removal from
+   *a new snapshot* is not evidence of unlearning from an existing model.
+3. **Script sanity.** Optional Unicode-script threshold for English-Latin,
+   Tamil-Tamil and Hindi-Devanagari. Devanagari cannot distinguish Hindi
+   from Marathi/Nepali; Latin cannot distinguish English from many other
+   languages. Code-switching and transliteration need a validated language
+   classifier and manual oversight.
+4. **Quality assessment.** Reproducible aggregate quality-score distributions
+   and, if human labels are supplied, precision/recall at a chosen threshold,
+   restricted to accepted labeled records. This is **not** proof of quality
+   gains or upstream filter precision. It is a first diagnostic step before
+   paying for independent human labels and ablation training.
+5. **Controlled domain tags.** Source-declared tags are limited to a small
+   schema. Tags are not verified, and the system does not automatically
+   classify medical, STEM, coding or any other content.
+
+Sources for design guidance (public material, not proprietary lab recipes):
+- https://docs.nvidia.com/nemo/curator/v26.09/curate-text/process-data/language-management/language
+- https://huggingface.co/docs/hub/datasets-cards
+- https://github.com/allenai/dolma3
+
+**Still missing:** validated FastText or comparable licensed language-ID
+integration and performance measurements; multilingual PII benchmarking;
+strong private evidence/rights registry and automated takedown propagation;
+trained quality classifiers, human inter-rater agreement and dataset
+contamination tests; distributed cross-shard dedup; independently verified
+real-data token budgets and ADA learning-performance improvements.

@@ -10,6 +10,7 @@ model nor a production-scale distributed data curation service.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import date
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import html
@@ -24,7 +25,9 @@ import tempfile
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
-VERSION = "0.1.0"
+from .language import script_consistent
+
+VERSION = "0.2.0"
 WORDS = re.compile(r"\w+", re.UNICODE)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?!\w)")
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\s().-]?){10,15}(?!\d)")
@@ -44,6 +47,9 @@ class CurationConfig:
     min_near_jaccard: float = 0.85
     max_holdout_records: int = 20_000
     supported_languages: tuple[str, ...] = ("en", "ta", "hi")
+    script_sanity: bool = False
+    commercial_use: bool = False
+    as_of_date: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int or self.seed < 0:
@@ -52,8 +58,14 @@ class CurationConfig:
                 self.max_chars < self.min_chars or
                 not 0 <= self.min_quality <= 1 or
                 not 0.5 <= self.min_near_jaccard <= 1 or
-                self.max_holdout_records < 1):
+                self.max_holdout_records < 1 or
+                type(self.script_sanity) is not bool or
+                type(self.commercial_use) is not bool):
             raise ValueError("invalid curation thresholds")
+        if self.as_of_date is not None:
+            if not isinstance(self.as_of_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", self.as_of_date):
+                raise ValueError("as_of_date must be YYYY-MM-DD")
+            date.fromisoformat(self.as_of_date)
 
 
 def digest(data: bytes) -> str:
@@ -233,9 +245,11 @@ class NearIndex:
 
 
 def load_policy(path: Path) -> dict[str, dict]:
+    """Schema v1 legacy or v2 explicit attestation (not automatic legal proof)."""
     config = json.loads(path.read_text(encoding="utf-8"))
-    if config.get("schema_version") != 1 or not isinstance(config.get("sources"), list):
-        raise ValueError("policy must have schema_version=1 and sources array")
+    if not isinstance(config, dict) or config.get("schema_version") not in (1, 2) or not isinstance(config.get("sources"), list):
+        raise ValueError("policy must have schema_version 1 or 2 and sources array")
+    version = config["schema_version"]
     sources = {}
     for entry in config["sources"]:
         if not isinstance(entry, dict):
@@ -247,26 +261,38 @@ def load_policy(path: Path) -> dict[str, dict]:
                     "owned", "licensed", "public_domain", "open_dataset_approved"
                 ) or type(entry.get("training_allowed")) is not bool):
             raise ValueError(f"invalid or duplicate policy source: {source_id!r}")
-        sources[source_id] = entry
+        if version == 2 and entry["training_allowed"]:
+            review = entry.get("review")
+            if (not isinstance(review, dict) or
+                    not isinstance(review.get("reviewed_by"), str) or
+                    not review["reviewed_by"].strip() or
+                    not isinstance(review.get("reviewed_at"), str) or
+                    not re.fullmatch(r"\d{4}-\d{2}-\d{2}", review["reviewed_at"]) or
+                    not isinstance(review.get("evidence_sha256"), str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", review["evidence_sha256"]) or
+                    type(entry.get("commercial_allowed")) is not bool or
+                    type(entry.get("redistribution_allowed")) is not bool or
+                    not isinstance(entry.get("allowed_uses"), list) or
+                    "pretraining" not in entry["allowed_uses"] or
+                    not all(isinstance(x, str) for x in entry["allowed_uses"]) or
+                    "retention_until" not in entry):
+                raise ValueError(f"v2 approved source {source_id!r} needs review evidence, scope and retention")
+            date.fromisoformat(review["reviewed_at"])
+            expiry = entry["retention_until"]
+            if expiry is not None:
+                if not isinstance(expiry, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expiry):
+                    raise ValueError(f"invalid retention_until for {source_id!r}")
+                date.fromisoformat(expiry)
+        sources[source_id] = {**entry, "_schema_version": version}
     return sources
 
 
 def read_denylist(path: Path | None) -> tuple[set[str], set[str]]:
-    ids: set[str] = set()
-    hashes: set[str] = set()
+    """Reject malformed or empty takedown registries rather than ignoring them."""
     if path is None:
-        return ids, hashes
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if isinstance(row.get("doc_id"), str):
-                ids.add(row["doc_id"])
-            if isinstance(row.get("sha256"), str) and re.fullmatch(
-                    r"[0-9a-f]{64}", row["sha256"]):
-                hashes.add(row["sha256"])
-    return ids, hashes
+        return set(), set()
+    from .lineage import read_tombstones
+    return read_tombstones(path)
 
 
 def read_holdout(path: Path | None, limit: int) -> tuple[set[str], list[frozenset[str]]]:
@@ -319,6 +345,14 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite {output_dir}")
     sources = load_policy(policy_path)
+    if config.commercial_use and any(
+        p["_schema_version"] != 2 and p["training_allowed"]
+        for p in sources.values()
+    ):
+        raise ValueError("--commercial-use requires schema v2 approved source policies")
+    if any(policy.get("_schema_version") == 2 and policy["training_allowed"]
+           for policy in sources.values()) and config.as_of_date is None:
+        raise ValueError("schema v2 requires an explicit --as-of-date for reproducible rights expiry checks")
     denied_ids, denied_hashes = read_denylist(denylist_path)
     holdout_exact, holdout_shingles = read_holdout(
         holdout_path, config.max_holdout_records)
@@ -351,6 +385,14 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                     policy = sources.get(source_id) if isinstance(source_id, str) else None
                     if policy is None or not policy["training_allowed"]:
                         reason = "source_not_approved"
+                    elif config.commercial_use and not policy.get("commercial_allowed", False):
+                        reason = "source_commercial_rights_not_granted"
+                    elif policy.get("_schema_version") == 2 and (
+                        policy["review"]["reviewed_at"] > config.as_of_date or
+                        (policy["retention_until"] is not None and
+                         policy["retention_until"] < config.as_of_date)
+                    ):
+                        reason = "source_rights_not_current"
                     elif (row.get("license") != policy["license"] or
                           row.get("rights_basis") != policy["rights_basis"]):
                         reason = "provenance_mismatch"
@@ -376,8 +418,14 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                             reason = "pii_or_secret"
                         elif row.get("language") not in config.supported_languages:
                             reason = "unsupported_or_undeclared_language"
+                        elif config.script_sanity and not script_consistent(text, row["language"])[0]:
+                            reason = "script_mismatch"
                         else:
                             url = clean_url(row.get("url"))
+                            if (has_pii_or_secret(doc_id) or
+                                    has_pii_or_secret(str(row.get("family_id", ""))) or
+                                    (url is not None and has_pii_or_secret(url))):
+                                raise ValueError("pii_or_secret_metadata")
                             score, features = score_text(text)
                             if score < config.min_quality:
                                 reason = "low_quality"
@@ -407,6 +455,11 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                                         "family_id": family,
                                         "split": split,
                                         "quality_score": score,
+                                        "domain_declared": (
+                                            row.get("domain") if row.get("domain") in
+                                            ("science", "code", "biomedicine", "education", "general", "other")
+                                            else "unlabeled"
+                                        ),
                                         "quality_features": features,
                                         "curator_version": VERSION,
                                     }
@@ -416,7 +469,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     reason = str(exc) if str(exc) in (
                         "record_too_large", "invalid_record", "invalid_url",
-                        "too_long") else "invalid_json_or_metadata"
+                        "too_long", "pii_or_secret_metadata") else "invalid_json_or_metadata"
                 if reason is not None:
                     stats[f"rejected_{reason}"] += 1
                     write_jsonl(audit, {
@@ -432,7 +485,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
         manifest = {
             "schema_version": 1,
             "curator_version": VERSION,
-            "algorithm": "ADA-Provenance-Lattice-v0.1",
+            "algorithm": "ADA-Provenance-Lattice-v0.2",
             "input_sha256": file_digest(input_path),
             "policy_sha256": file_digest(policy_path),
             "holdout_sha256": file_digest(holdout_path),
@@ -444,7 +497,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                                ("train.jsonl", "validation.jsonl", "test.jsonl",
                                 "audit.jsonl")},
             "limits": {
-                "language": "declared only, NOT verified language identification",
+                "language": "optional script sanity only; NOT verified language identification",
                 "near_dedup": "MinHash-LSH candidate search; false negatives possible",
                 "quality": "heuristics only; domain/model quality not certified",
                 "input_order": "stable only for identical ordered inputs",

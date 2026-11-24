@@ -26,5 +26,8 @@ jobs:
         run: |
           ada-curate run --input examples/input.jsonl --sources examples/sources.json --output /tmp/ada-curator-ci
           ada-curate verify --output /tmp/ada-curator-ci
+          ada-curate assess --snapshot /tmp/ada-curator-ci --report /tmp/ada-curator-quality.json
+          ada-curate revoke --parent /tmp/ada-curator-ci --tombstones examples/demo_tombstones.jsonl --output /tmp/ada-curator-postrevocation
+          ada-curate verify --output /tmp/ada-curator-postrevocation
       - name: Check Python syntax
         run: python -m compileall -q src

@@ -8,6 +8,9 @@ build/
 .runs/
 data/raw/
 data/curated/
+private/
+.env
+.secrets/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
