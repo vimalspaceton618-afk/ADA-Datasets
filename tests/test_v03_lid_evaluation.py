@@ -53,7 +53,7 @@ class DummyClassifier:
         }
 
     def predict(self, text):
-        if "science" in text:
+        if "scientific" in text or "science" in text:
             return LanguagePrediction("en", 0.99)
         if "Software" in text:
             return LanguagePrediction("ta", 0.92)
