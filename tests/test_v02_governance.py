@@ -119,6 +119,41 @@ class V02Tests(unittest.TestCase):
             revoke_snapshot(parent, tombstones, self.root / "child")
         self.assertFalse((self.root / "child").exists())
 
+    def test_revocation_receipt_tampering_fails_verification(self):
+        self.rows(self.row("a", A))
+        self.curate()
+        tombstones = self.root / "tombstones.jsonl"
+        tombstones.write_text('{"doc_id":"local:a"}\n')
+        revoke_snapshot(self.root / "first", tombstones, self.root / "second")
+        path = self.root / "second" / "revoked.jsonl"
+        path.write_text(path.read_text() + '{"decision":"removed"}\n')
+        with self.assertRaisesRegex(ValueError, "corrupt revocation receipt"):
+            validate_output(self.root / "second")
+
+    def test_commercial_rights_fail_closed_on_legacy_and_unapproved_v2(self):
+        self.rows(self.row("a", A))
+        with self.assertRaisesRegex(ValueError, "schema v2"):
+            self.curate(config=CurationConfig(commercial_use=True,
+                                             as_of_date="2026-11-25"))
+        self.policy.write_text(json.dumps({
+            "schema_version": 2,
+            "sources": [{
+                "source_id": "local", "license": "CC0-1.0",
+                "rights_basis": "owned", "training_allowed": True,
+                "allowed_uses": ["pretraining"],
+                "commercial_allowed": False,
+                "redistribution_allowed": False,
+                "retention_until": None,
+                "review": {"reviewed_by": "synthetic-test-author",
+                           "reviewed_at": "2026-11-24",
+                           "evidence_sha256": "b" * 64}
+            }]
+        }))
+        m = self.curate("commercial_denied", config=CurationConfig(
+            commercial_use=True, as_of_date="2026-11-25"))
+        self.assertEqual(m["totals"].get("accepted", 0), 0)
+        self.assertEqual(m["totals"]["rejected_source_commercial_rights_not_granted"], 1)
+
     def test_revoke_rejects_existing_destination(self):
         self.rows(self.row("a", A))
         self.curate()
