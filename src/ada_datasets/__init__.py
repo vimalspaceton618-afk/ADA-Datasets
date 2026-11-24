@@ -2,4 +2,4 @@
 from .core import CurationConfig, curate_dataset
 
 __all__ = ["CurationConfig", "curate_dataset"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
