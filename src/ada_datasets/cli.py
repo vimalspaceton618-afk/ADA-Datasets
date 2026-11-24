@@ -51,6 +51,34 @@ def validate_output(directory: Path) -> dict:
             raise ValueError("split row count differs from manifest")
     if len(splits) != manifest["totals"].get("accepted", 0):
         raise ValueError("accepted row count differs from manifest")
+    if "revocation_receipt_sha256" in manifest:
+        receipt = directory / "revoked.jsonl"
+        if receipt.is_symlink() or not receipt.is_file():
+            raise ValueError("missing or symlinked revocation receipt")
+        if file_digest(receipt) != manifest["revocation_receipt_sha256"]:
+            raise ValueError("corrupt revocation receipt")
+        count = 0
+        with receipt.open(encoding="utf-8") as stream:
+            for line in stream:
+                row = json.loads(line)
+                if (not isinstance(row, dict) or
+                        set(row) != {"decision", "split", "row_sha256"} or
+                        row["decision"] != "removed" or
+                        row["split"] not in ("train", "validation", "test") or
+                        not isinstance(row["row_sha256"], str) or
+                        len(row["row_sha256"]) != 64 or
+                        any(c not in "0123456789abcdef" for c in row["row_sha256"])):
+                    raise ValueError("invalid revocation receipt record")
+                count += 1
+        lineage = manifest.get("lineage", {})
+        if count != lineage.get("removed_total", -1):
+            raise ValueError("revocation receipt count differs from lineage")
+        for name in ("parent_manifest_sha256", "tombstone_sha256"):
+            digest = lineage.get(name)
+            if not isinstance(digest, str) or len(digest) != 64 or any(
+                c not in "0123456789abcdef" for c in digest
+            ):
+                raise ValueError(f"invalid revocation lineage {name}")
     return {
         "valid": True,
         "docs": len(splits),
