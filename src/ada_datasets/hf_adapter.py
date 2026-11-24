@@ -53,19 +53,23 @@ def adapt_hf(args) -> dict:
                     break
                 if not isinstance(record.get("text"), str):
                     continue
-                original_id = record.get("id") or record.get("url")
-                if original_id is None:
-                    original_id = sha256(record["text"].encode()).hexdigest()
+                # Hash upstream identifiers so signed URLs and personal
+                # query parameters do not enter generated document IDs.
+                original_id = (record.get("id") or record.get("url") or
+                               sha256(record["text"].encode()).hexdigest())
+                document_id = sha256(
+                    (args.dataset_id + ":" + str(original_id)).encode()
+                ).hexdigest()
                 language = record.get("language") or args.language
                 if language not in ("en", "ta", "hi"):
                     continue
                 write_jsonl(stream, {
-                    "id": str(original_id), "text": record["text"],
+                    "id": document_id, "text": record["text"],
                     "source_id": args.source_id,
                     "license": policy["license"],
                     "rights_basis": policy["rights_basis"],
                     "language": language, "url": record.get("url"),
-                    "family_id": str(original_id),
+                    "family_id": document_id,
                 })
                 count += 1
         os.rename(temporary, args.output)
