@@ -29,6 +29,7 @@ WORDS = re.compile(r"\w+", re.UNICODE)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?!\w)")
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\s().-]?){10,15}(?!\d)")
 PRIVATE = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{24,}", re.I)
+CARD_CANDIDATE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
 SPLIT_BUCKETS = {"train": 9800, "validation": 100, "test": 100}
 MINHASH_PRIME = (1 << 61) - 1
 
@@ -92,8 +93,25 @@ def clean_url(value: object) -> str | None:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "", ""))
 
 
+def _luhn_card(candidate: str) -> bool:
+    digits = "".join(c for c in candidate if c.isdigit())
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    for pos, char in enumerate(reversed(digits)):
+        value = int(char)
+        if pos % 2:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
 def has_pii_or_secret(text: str) -> bool:
     if EMAIL.search(text) or PRIVATE.search(text):
+        return True
+    if any(_luhn_card(match.group()) for match in CARD_CANDIDATE.finditer(text)):
         return True
     for match in PHONE.finditer(text):
         digits = re.sub(r"\D", "", match.group())
@@ -338,6 +356,8 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                         reason = "provenance_mismatch"
                     elif row.get("opt_out") is True or row.get("do_not_train") is True:
                         reason = "record_opt_out"
+                    elif any(key in row and type(row[key]) is not bool for key in ("opt_out", "do_not_train")):
+                        reason = "invalid_optout_flag"
                     elif not isinstance(rec_id, str) or not rec_id.strip() or not isinstance(raw, str):
                         reason = "invalid_record"
                     elif len(raw) > config.max_chars:
@@ -402,7 +422,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                     write_jsonl(audit, {
                         "line": number,
                         "input_line_sha256": line_hash,
-                        "source_id": source_id if isinstance(source_id, str) else None,
+                        "source_id": source_id if isinstance(source_id, str) and source_id in sources else None,
                         "decision": "rejected",
                         "reason": reason,
                     })
