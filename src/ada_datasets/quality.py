@@ -73,7 +73,7 @@ def evaluate_quality(snapshot: Path, *, labels_path: Path | None = None,
                 score = float(record["quality_score"])
                 by_language[record["language_declared"]].append(score)
                 by_split[split].append(score)
-                by_domain[record.get("domain", "unlabeled")] += 1
+                by_domain[record.get("domain_declared", "unlabeled")] += 1
                 key = record["sha256"]
                 if key in labels:
                     selected.add(key)
