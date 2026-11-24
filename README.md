@@ -124,7 +124,9 @@ imply an existing patent or an independently validated novel algorithm.
 `allowed_uses` (including `pretraining`), `commercial_allowed`,
 `redistribution_allowed`, and `retention_until` (an ISO date or null).
 These fields are declarations by your own reviewer, **not** automatic
-legal clearance. Policies remain local and may contain restricted details.
+legal clearance. For commercial model training add `--commercial-use`: legacy
+v1 approvals are rejected, and v2 sources with `commercial_allowed: false`
+are excluded. This flag cannot establish rights by itself. Policies remain local and may contain restricted details.
 
     ada-curate run --input examples/input.jsonl \
       --sources private/reviewed_v2_sources.json \
