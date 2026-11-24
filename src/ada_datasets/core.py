@@ -48,6 +48,7 @@ class CurationConfig:
     max_holdout_records: int = 20_000
     supported_languages: tuple[str, ...] = ("en", "ta", "hi")
     script_sanity: bool = False
+    commercial_use: bool = False
     as_of_date: str | None = None
 
     def __post_init__(self) -> None:
@@ -58,7 +59,8 @@ class CurationConfig:
                 not 0 <= self.min_quality <= 1 or
                 not 0.5 <= self.min_near_jaccard <= 1 or
                 self.max_holdout_records < 1 or
-                type(self.script_sanity) is not bool):
+                type(self.script_sanity) is not bool or
+                type(self.commercial_use) is not bool):
             raise ValueError("invalid curation thresholds")
         if self.as_of_date is not None:
             if not isinstance(self.as_of_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", self.as_of_date):
@@ -343,6 +345,11 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite {output_dir}")
     sources = load_policy(policy_path)
+    if config.commercial_use and any(
+        p["_schema_version"] != 2 and p["training_allowed"]
+        for p in sources.values()
+    ):
+        raise ValueError("--commercial-use requires schema v2 approved source policies")
     if any(policy.get("_schema_version") == 2 and policy["training_allowed"]
            for policy in sources.values()) and config.as_of_date is None:
         raise ValueError("schema v2 requires an explicit --as-of-date for reproducible rights expiry checks")
@@ -378,6 +385,8 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                     policy = sources.get(source_id) if isinstance(source_id, str) else None
                     if policy is None or not policy["training_allowed"]:
                         reason = "source_not_approved"
+                    elif config.commercial_use and not policy.get("commercial_allowed", False):
+                        reason = "source_commercial_rights_not_granted"
                     elif policy.get("_schema_version") == 2 and (
                         policy["review"]["reviewed_at"] > config.as_of_date or
                         (policy["retention_until"] is not None and
