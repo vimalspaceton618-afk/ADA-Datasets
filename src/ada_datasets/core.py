@@ -26,8 +26,9 @@ import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
 from .language import script_consistent
+from .lid import accepted_prediction
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 WORDS = re.compile(r"\w+", re.UNICODE)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?!\w)")
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\s().-]?){10,15}(?!\d)")
@@ -48,6 +49,7 @@ class CurationConfig:
     max_holdout_records: int = 20_000
     supported_languages: tuple[str, ...] = ("en", "ta", "hi")
     script_sanity: bool = False
+    lid_min_confidence: float = 0.80
     commercial_use: bool = False
     as_of_date: str | None = None
 
@@ -60,6 +62,7 @@ class CurationConfig:
                 not 0.5 <= self.min_near_jaccard <= 1 or
                 self.max_holdout_records < 1 or
                 type(self.script_sanity) is not bool or
+                not 0 < self.lid_min_confidence <= 1 or
                 type(self.commercial_use) is not bool):
             raise ValueError("invalid curation thresholds")
         if self.as_of_date is not None:
@@ -330,7 +333,8 @@ def write_jsonl(stream, record: dict) -> None:
 def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                    config: CurationConfig | None = None,
                    holdout_path: Path | None = None,
-                   denylist_path: Path | None = None) -> dict:
+                   denylist_path: Path | None = None,
+                   language_identifier=None) -> dict:
     """Create an immutable local output directory or fail without publishing.
 
     Assumes an exclusive writer and an ordered input stream. Equal bytes and
@@ -344,6 +348,15 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
         raise FileNotFoundError("input JSONL and source policy must both exist")
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite {output_dir}")
+    lid_meta = None
+    if language_identifier is not None:
+        lid_meta = language_identifier.metadata()
+        if (not isinstance(lid_meta, dict) or
+                lid_meta.get("family") != "fasttext-lid176" or
+                lid_meta.get("license_declared") != "CC-BY-SA-3.0" or
+                not isinstance(lid_meta.get("model_sha256"), str) or
+                not re.fullmatch(r"[0-9a-f]{64}", lid_meta["model_sha256"])):
+            raise ValueError("language identifier requires a pinned licensed model")
     sources = load_policy(policy_path)
     if config.commercial_use and any(
         p["_schema_version"] != 2 and p["training_allowed"]
@@ -420,6 +433,14 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                             reason = "unsupported_or_undeclared_language"
                         elif config.script_sanity and not script_consistent(text, row["language"])[0]:
                             reason = "script_mismatch"
+                        elif language_identifier is not None and (
+                            lid_rejection := accepted_prediction(
+                                language_identifier.predict(text),
+                                row["language"],
+                                config.lid_min_confidence,
+                            )
+                        ) is not None:
+                            reason = lid_rejection
                         else:
                             url = clean_url(row.get("url"))
                             if (has_pii_or_secret(doc_id) or
@@ -485,7 +506,8 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
         manifest = {
             "schema_version": 1,
             "curator_version": VERSION,
-            "algorithm": "ADA-Provenance-Lattice-v0.2",
+            "algorithm": "ADA-Provenance-Lattice-v0.3",
+            "language_model": lid_meta,
             "input_sha256": file_digest(input_path),
             "policy_sha256": file_digest(policy_path),
             "holdout_sha256": file_digest(holdout_path),
@@ -497,7 +519,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                                ("train.jsonl", "validation.jsonl", "test.jsonl",
                                 "audit.jsonl")},
             "limits": {
-                "language": "optional script sanity only; NOT verified language identification",
+                "language": "optional pinned fastText lid.176 gate; externally calibrated accuracy required",
                 "near_dedup": "MinHash-LSH candidate search; false negatives possible",
                 "quality": "heuristics only; domain/model quality not certified",
                 "input_order": "stable only for identical ordered inputs",
