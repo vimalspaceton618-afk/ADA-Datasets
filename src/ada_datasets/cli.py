@@ -108,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="conservative Unicode script sanity (not language identification)")
     curate.add_argument("--commercial-use", action="store_true",
                         help="require explicitly approved commercial use in v2 source registry")
+    curate.add_argument("--lid-model", type=Path,
+                        help="local original fastText lid.176.bin/.ftz; never downloaded automatically")
+    curate.add_argument("--lid-model-sha256",
+                        help="expected full SHA256 of exact LID model file")
+    curate.add_argument("--lid-model-license",
+                        help="operator-reviewed license of LID model: CC-BY-SA-3.0")
+    curate.add_argument("--lid-min-confidence", default=0.80, type=float,
+                        help="reject LID scores below this threshold")
 
     revoke = sub.add_parser("revoke", help="publish a new dataset snapshot excluding tombstones")
     revoke.add_argument("--parent", required=True, type=Path,
@@ -122,6 +130,23 @@ def main(argv: list[str] | None = None) -> int:
     assess.add_argument("--labels", type=Path, help="independent SHA-256/quality_label JSONL")
     assess.add_argument("--threshold", default=0.75, type=float)
     assess.add_argument("--report", required=True, type=Path, help="new JSON report output")
+
+    eval_lid = sub.add_parser("evaluate-lid",
+        help="evaluate optional local language ID on independent gold-labeled examples")
+    eval_lid.add_argument("--gold", type=Path, required=True)
+    eval_lid.add_argument("--model", type=Path, required=True)
+    eval_lid.add_argument("--model-sha256", required=True)
+    eval_lid.add_argument("--model-license", required=True)
+    eval_lid.add_argument("--min-confidence", type=float, default=0.80)
+    eval_lid.add_argument("--report", type=Path, required=True)
+
+    eval_filter = sub.add_parser("evaluate-filter",
+        help="measure accepted/rejected decisions against independent line-level labels")
+    eval_filter.add_argument("--snapshot", type=Path, required=True)
+    eval_filter.add_argument("--input", type=Path, required=True,
+                             help="exact original raw JSONL used by run")
+    eval_filter.add_argument("--gold", type=Path, required=True)
+    eval_filter.add_argument("--report", type=Path, required=True)
 
     verify = sub.add_parser("verify", help="verify immutable manifest/output integrity")
     verify.add_argument("--output", type=Path, required=True)
@@ -154,16 +179,50 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "adapt-hf":
             from .hf_adapter import adapt_hf
             result = adapt_hf(args)
+        elif args.command == "evaluate-lid":
+            from .evaluation import evaluate_language_id
+            from .lid import FastTextLID176
+            from .quality import write_report
+            identifier = FastTextLID176(
+                args.model, expected_sha256=args.model_sha256,
+                declared_license=args.model_license,
+            )
+            result = evaluate_language_id(
+                identifier, args.gold, min_confidence=args.min_confidence
+            )
+            write_report(result, args.report)
+        elif args.command == "evaluate-filter":
+            from .evaluation import evaluate_filter
+            from .quality import write_report
+            result = evaluate_filter(args.snapshot, args.input, args.gold)
+            write_report(result, args.report)
         else:
+            lid_args = (args.lid_model, args.lid_model_sha256, args.lid_model_license)
+            if any(x is not None for x in lid_args) and not all(
+                x is not None for x in lid_args
+            ):
+                raise ValueError(
+                    "--lid-model, --lid-model-sha256 and --lid-model-license "
+                    "must be supplied together"
+                )
+            identifier = None
+            if args.lid_model is not None:
+                from .lid import FastTextLID176
+                identifier = FastTextLID176(
+                    args.lid_model, expected_sha256=args.lid_model_sha256,
+                    declared_license=args.lid_model_license
+                )
             config = CurationConfig(seed=args.seed, min_quality=args.min_quality,
                                     min_chars=args.min_chars, min_words=args.min_words,
                                     min_near_jaccard=args.near_jaccard,
                                     script_sanity=args.script_sanity,
+                                    lid_min_confidence=args.lid_min_confidence,
                                     commercial_use=args.commercial_use,
                                     as_of_date=args.as_of_date)
             result = curate_dataset(args.input, args.sources, args.output,
                                     config=config, holdout_path=args.holdout,
-                                    denylist_path=args.denylist)
+                                    denylist_path=args.denylist,
+                                    language_identifier=identifier)
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
         return 0
     except (OSError, ValueError, RuntimeError, KeyError) as exc:

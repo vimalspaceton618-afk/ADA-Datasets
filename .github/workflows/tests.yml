@@ -29,5 +29,24 @@ jobs:
           ada-curate assess --snapshot /tmp/ada-curator-ci --report /tmp/ada-curator-quality.json
           ada-curate revoke --parent /tmp/ada-curator-ci --tombstones examples/demo_tombstones.jsonl --output /tmp/ada-curator-postrevocation
           ada-curate verify --output /tmp/ada-curator-postrevocation
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          input_path = Path("examples/input.jsonl")
+          with Path("/tmp/ada-filter-gold.jsonl").open("w", encoding="utf-8") as dst:
+              with input_path.open(encoding="utf-8") as source:
+                  for n, line in enumerate(source, 1):
+                      row = json.loads(line)
+                      gold = {
+                          "line": n,
+                          "input_line_sha256": hashlib.sha256(line.encode()).hexdigest(),
+                          "should_keep": row["source_id"] == "archi-authored-demo",
+                          "language": "en",
+                      }
+                      dst.write(json.dumps(gold) + "\n")
+          PY
+          ada-curate evaluate-filter --snapshot /tmp/ada-curator-ci --input examples/input.jsonl --gold /tmp/ada-filter-gold.jsonl --report /tmp/ada-filter-evaluation.json
       - name: Check Python syntax
         run: python -m compileall -q src
