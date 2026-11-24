@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "archi-authored-demo",
+      "license": "CC0-1.0",
+      "rights_basis": "owned",
+      "training_allowed": true,
+      "reviewed_by": "repository-demo-only",
+      "notes": "Synthetic examples written for tests. NOT approval of external datasets."
+    },
+    {
+      "source_id": "unreviewed-external",
+      "license": "unknown",
+      "rights_basis": "open_dataset_approved",
+      "training_allowed": false,
+      "notes": "Fail-closed demonstration."
+    }
+  ]
+}
