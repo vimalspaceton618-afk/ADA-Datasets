@@ -62,7 +62,7 @@ def evaluate_quality(snapshot: Path, *, labels_path: Path | None = None,
     validate_output(snapshot)
     labels, label_hash = _read_labels(labels_path)
     by_language: dict[str, list[float]] = defaultdict(list)
-    by_split: dict[str, list[float]] = defaultdict(list)
+    by_split: dict[str, list[float]] = {name: [] for name in _SPLITS}
     by_domain = Counter()
     selected = set()
     confusion = Counter()
