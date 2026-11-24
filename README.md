@@ -173,3 +173,77 @@ The v0.2 implementation remains a **single-host research prototype**.
 Review actual source terms, collect real annotations, validate multilingual
 privacy performance, establish downstream deletion procedures, and run
 controlled ADA pretraining ablations before relying on it at scale.
+
+## v0.3: language-ID gates and independent evaluation
+
+The existing --script-sanity option is not a language identifier. For model-based
+language filtering, ADA Curator now supports a **local operator-supplied
+original fastText lid.176** file (.bin or .ftz). The optional Python dependency
+is installed separately with: python -m pip install fasttext
+
+**Important license distinction:** The original fastText lid.176 models are
+released under CC-BY-SA-3.0:
+https://fasttext.cc/docs/en/language-identification.html
+
+The similarly named Hugging Face facebook/fasttext-language-identification
+repository hosts a **different NLLB model** and specifies CC-BY-NC-4.0:
+https://huggingface.co/facebook/fasttext-language-identification
+
+We neither download nor distribute model weights. A model must be supplied
+locally along with its *actual SHA-256 digest* and declared license, subject
+to independent rights review. Pinning a file cannot prove its license.
+
+### Local model-based data curation
+
+Obtain the original licensed weights yourself. Verify the file digest using
+sha256sum on Linux/macOS, or Get-FileHash on Windows. Use your verified actual
+SHA-256 in place of the placeholder:
+
+    ada-curate run --input data/raw/approved.jsonl \
+      --sources private/approved_v2_sources.json \
+      --as-of-date 2026-11-25 --commercial-use \
+      --lid-model private/models/lid.176.ftz \
+      --lid-model-sha256 YOUR_REAL_64_CHARACTER_SHA256 \
+      --lid-model-license CC-BY-SA-3.0 \
+      --lid-min-confidence 0.85 \
+      --output .runs/lid-gated-v03
+
+A different model label or low-confidence result rejects the document and
+records only a content-free reason. The manifest includes the pinned model
+SHA-256 and its declared license. Scores are not calibrated error probabilities.
+
+### Independent held-out language evaluation
+
+A private JSONL gold file contains text and a human-verified language (en,
+ta, hi or another ISO code, grouped as other). Run:
+
+    ada-curate evaluate-lid --gold private/language_gold.jsonl \
+      --model private/models/lid.176.ftz \
+      --model-sha256 YOUR_REAL_64_CHARACTER_SHA256 \
+      --model-license CC-BY-SA-3.0 \
+      --min-confidence 0.85 \
+      --report .runs/lid-evaluation.json
+
+This reports aggregate confusion, abstentions and coverage. The repository
+unit tests use **mock inference only**; no live real-model accuracy claim is made.
+
+### Evaluate the full original curator input (including rejects)
+
+The v0.2 assess command measures quality only for accepted documents.
+Version 0.3 adds a full-pool evaluation. Supply the original byte-exact
+input file and independent human labels indexed by 1-based line number,
+the SHA-256 of the exact original JSONL line including newline, a Boolean
+should_keep and optional independent language label.
+
+    ada-curate evaluate-filter --snapshot .runs/original-curation \
+      --input data/raw/approved.jsonl \
+      --gold private/input_filter_gold.jsonl \
+      --report .runs/curation-evaluation.json
+
+The evaluator verifies the source checksum against the snapshot and
+cross-checks every rejected audit-line hash. It reports aggregate confusion,
+per-language metrics if labeled, precision, recall and approximate Wilson
+95% intervals without logging any raw text. It refuses derived revocation
+snapshots and does not infer performance on an unlabeled population.
+A representative, independently annotated sample is required for meaningful
+results. For full methodology see docs/LANGUAGE_AND_DATA_EVALUATION.md.
