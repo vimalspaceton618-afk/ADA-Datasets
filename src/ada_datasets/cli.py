@@ -75,6 +75,23 @@ def main(argv: list[str] | None = None) -> int:
     curate.add_argument("--min-chars", type=int, default=100)
     curate.add_argument("--min-words", type=int, default=18)
     curate.add_argument("--near-jaccard", type=float, default=0.85)
+    curate.add_argument("--as-of-date", help="YYYY-MM-DD: required for v2 rights expiry; pinned in manifest")
+    curate.add_argument("--script-sanity", action="store_true",
+                        help="conservative Unicode script sanity (not language identification)")
+
+    revoke = sub.add_parser("revoke", help="publish a new dataset snapshot excluding tombstones")
+    revoke.add_argument("--parent", required=True, type=Path,
+                        help="already curated and verified original snapshot")
+    revoke.add_argument("--tombstones", required=True, type=Path,
+                        help="private JSONL document identifiers or normalized SHA256 hashes")
+    revoke.add_argument("--output", required=True, type=Path,
+                        help="NEW output snapshot directory; never overwrite parent")
+
+    assess = sub.add_parser("assess", help="aggregate corpus quality and optional human-label metrics")
+    assess.add_argument("--snapshot", required=True, type=Path)
+    assess.add_argument("--labels", type=Path, help="independent SHA-256/quality_label JSONL")
+    assess.add_argument("--threshold", default=0.75, type=float)
+    assess.add_argument("--report", required=True, type=Path, help="new JSON report output")
 
     verify = sub.add_parser("verify", help="verify immutable manifest/output integrity")
     verify.add_argument("--output", type=Path, required=True)
@@ -96,13 +113,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "verify":
             result = validate_output(args.output)
+        elif args.command == "revoke":
+            from .lineage import revoke_snapshot
+            result = revoke_snapshot(args.parent, args.tombstones, args.output)
+        elif args.command == "assess":
+            from .quality import evaluate_quality, write_report
+            result = evaluate_quality(args.snapshot, labels_path=args.labels,
+                                      threshold=args.threshold)
+            write_report(result, args.report)
         elif args.command == "adapt-hf":
             from .hf_adapter import adapt_hf
             result = adapt_hf(args)
         else:
             config = CurationConfig(seed=args.seed, min_quality=args.min_quality,
                                     min_chars=args.min_chars, min_words=args.min_words,
-                                    min_near_jaccard=args.near_jaccard)
+                                    min_near_jaccard=args.near_jaccard,
+                                    script_sanity=args.script_sanity,
+                                    as_of_date=args.as_of_date)
             result = curate_dataset(args.input, args.sources, args.output,
                                     config=config, holdout_path=args.holdout,
                                     denylist_path=args.denylist)
