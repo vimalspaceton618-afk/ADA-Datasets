@@ -61,7 +61,7 @@ def evaluate_language_id(model, gold_path: Path, *,
     if not 0 < min_confidence <= 1:
         raise ValueError("min_confidence must be within (0,1]")
     if not 1 <= max_rows <= 1_000_000:
-        raise ValueError("invalid max_rows")
+        raise ValueError("gold language sample cap: max_rows must be 1..1000000")
     model_info = model.metadata()
     if not isinstance(model_info, dict) or not isinstance(
             model_info.get("model_sha256"), str):
