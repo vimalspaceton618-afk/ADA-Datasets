@@ -115,3 +115,59 @@ existing LICENSE file. Because this repository is public, code published here
 is **not secret/proprietary**. Private heuristics or commercial policies should
 be developed in a separate access-controlled project. Branding APL does not
 imply an existing patent or an independently validated novel algorithm.
+
+
+## v0.2: reviewable source rights, revocation lineage and measured diagnostics
+
+**Review-date-pinned rights policy:** V2 source policies add
+`review.reviewed_by`, `review.reviewed_at`, `review.evidence_sha256`,
+`allowed_uses` (including `pretraining`), `commercial_allowed`,
+`redistribution_allowed`, and `retention_until` (an ISO date or null).
+These fields are declarations by your own reviewer, **not** automatic
+legal clearance. Policies remain local and may contain restricted details.
+
+    ada-curate run --input examples/input.jsonl \
+      --sources private/reviewed_v2_sources.json \
+      --as-of-date 2026-11-25 --script-sanity \
+      --output .runs/reviewed-2026-11-25
+
+Version 1 source policy files remain readable for backward compatibility
+but do not have evidence/retention enforcement. To use the stricter mode,
+migrate each approved source to v2 and keep review records privately.
+Script sanity checks Unicode writing systems for English, Tamil and Hindi;
+it **cannot** identify the language and can reject legitimate code-mixing.
+
+**Append-only successor snapshots for removals:** To remove a document
+from a previously curated snapshot, create a private JSONL tombstone registry
+with either `{"doc_id":"source:source-local-id"}` or
+`{"sha256":"<lowercase SHA-256 of normalized text>"}`. Then:
+
+    ada-curate revoke --parent .runs/reviewed-2026-11-25 \
+      --tombstones private/tombstones.jsonl \
+      --output .runs/reviewed-2026-11-25-revoked
+    ada-curate verify --output .runs/reviewed-2026-11-25-revoked
+
+A new snapshot is created, with matching documents removed, a new
+`manifest.json`, the parent manifest's hash, and content-free removal
+receipts. Existing snapshots are never overwritten. **Removal does not
+erase the parent**, other dataset copies, model weights, GPU caches or
+previously trained systems. Operators must explicitly quarantine/delete
+all ancestor and downstream copies. Maintain the same tombstone registry
+when subsequently rebuilding datasets from raw inputs.
+
+**Corpus quality and independent human ratings:**
+
+    ada-curate assess --snapshot .runs/reviewed-2026-11-25-revoked \
+      --report .runs/quality-assessment.json
+
+Optional `--labels private/independent_ratings.jsonl --threshold 0.75`
+reads records with `sha256` and binary `quality_label` (0 or 1).
+The JSON report contains aggregate score distributions and a confusion
+matrix/precision/recall on *labeled accepted documents only*. It cannot
+estimate rejection quality or incoming-pool quality without independent
+sampling that includes rejected items. This is not a trained classifier.
+
+The v0.2 implementation remains a **single-host research prototype**.
+Review actual source terms, collect real annotations, validate multilingual
+privacy performance, establish downstream deletion procedures, and run
+controlled ADA pretraining ablations before relying on it at scale.
