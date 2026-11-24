@@ -105,15 +105,19 @@ class ADADataCurationTest(unittest.TestCase):
             self.row("key", A + " -----BEGIN PRIVATE KEY-----"),
             self.row("opt", A, opt_out=True),
             self.row("notrain", A, do_not_train=True),
+            self.row("card", A + " This test card is 4111111111111111."),
+            self.row("malformed-consent", A, opt_out="false"),
         ])
         result = self.run_pipeline()
         self.assertEqual(result["totals"].get("accepted", 0), 0)
-        self.assertEqual(result["totals"]["rejected_pii_or_secret"], 3)
+        self.assertEqual(result["totals"]["rejected_pii_or_secret"], 4)
         self.assertEqual(result["totals"]["rejected_record_opt_out"], 2)
+        self.assertEqual(result["totals"]["rejected_invalid_optout_flag"], 1)
         audit = (self.root / "curated/audit.jsonl").read_text()
         self.assertNotIn("jane.doe", audit)
         self.assertNotIn("PRIVATE KEY", audit)
         self.assertNotIn("98765", audit)
+        self.assertNotIn("4111111111111111", audit)
 
     def test_exact_and_shingle_identical_near_duplicate(self):
         text_variant = A.replace("scientific question", "scientific, question")
@@ -187,6 +191,21 @@ class ADADataCurationTest(unittest.TestCase):
         result = self.run_pipeline()
         self.assertEqual(result["totals"]["rejected_invalid_json_or_metadata"], 1)
         self.assertEqual(result["totals"]["accepted"], 1)
+
+    def test_rejected_unregistered_source_id_is_not_copied_to_audit(self):
+        self.write([self.row("x", source_id="private-password-in-source-name")])
+        self.run_pipeline()
+        audit = (self.root / "curated/audit.jsonl").read_text()
+        self.assertNotIn("private-password-in-source-name", audit)
+
+    def test_hf_adapter_requires_approval_before_loading_dependencies(self):
+        from types import SimpleNamespace
+        from ada_datasets.hf_adapter import adapt_hf
+        args = SimpleNamespace(
+            acknowledge_source_rights=False,
+        )
+        with self.assertRaisesRegex(ValueError, "acknowledge-source-rights"):
+            adapt_hf(args)
 
     def test_exact_split_reproducibility(self):
         self.assertEqual(choose_split("source:family", 2026),
