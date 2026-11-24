@@ -159,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                                     min_chars=args.min_chars, min_words=args.min_words,
                                     min_near_jaccard=args.near_jaccard,
                                     script_sanity=args.script_sanity,
+                                    commercial_use=args.commercial_use,
                                     as_of_date=args.as_of_date)
             result = curate_dataset(args.input, args.sources, args.output,
                                     config=config, holdout_path=args.holdout,
