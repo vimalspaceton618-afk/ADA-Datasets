@@ -106,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     curate.add_argument("--as-of-date", help="YYYY-MM-DD: required for v2 rights expiry; pinned in manifest")
     curate.add_argument("--script-sanity", action="store_true",
                         help="conservative Unicode script sanity (not language identification)")
+    curate.add_argument("--commercial-use", action="store_true",
+                        help="require explicitly approved commercial use in v2 source registry")
 
     revoke = sub.add_parser("revoke", help="publish a new dataset snapshot excluding tombstones")
     revoke.add_argument("--parent", required=True, type=Path,
