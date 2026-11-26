@@ -4,13 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ada-datasets"
-version = "0.3.0"
+version = "0.4.0"
 description = "ADA Curator: provenance-first reproducible training-data preparation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "ARcHi / ADA Research"}]
 dependencies = []
+
+[project.optional-dependencies]
+release = ["pyarrow>=17,<24", "tokenizers>=0.20,<0.24"]
+models = [
+    "fasttext-wheel>=0.9.2,<1; python_version < '3.13'",
+    "numpy<2; python_version < '3.13'",
+]
+hub = ["datasets>=3,<5"]
 
 [project.scripts]
 ada-curate = "ada_datasets.cli:main"

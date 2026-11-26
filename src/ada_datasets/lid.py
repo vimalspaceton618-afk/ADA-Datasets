@@ -66,6 +66,8 @@ class FastTextLID176:
                 "optional dependency missing: pip install fasttext"
             ) from exc
         self._model = fasttext.load_model(str(path))
+        if _sha256_file(path) != observed:
+            raise ValueError("language-ID model changed while loading")
         self.model_sha256 = observed
         self.license_declared = declared_license
 
@@ -82,7 +84,11 @@ class FastTextLID176:
             raise ValueError("fastText returned an invalid prediction")
         if not re.fullmatch(r"__label__[a-z]{2,3}", labels[0]):
             raise ValueError("unexpected language label: expected original lid.176 codes")
-        return LanguagePrediction(labels[0][9:], float(scores[0]))
+        confidence = float(scores[0])
+        # fastText can add a small epsilon at prediction time.
+        if 1.0 < confidence <= 1.0001:
+            confidence = 1.0
+        return LanguagePrediction(labels[0][9:], confidence)
 
     def metadata(self) -> dict:
         return {

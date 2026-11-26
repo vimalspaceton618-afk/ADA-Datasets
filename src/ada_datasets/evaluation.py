@@ -189,9 +189,14 @@ def evaluate_filter(snapshot: Path, original_input: Path, gold_path: Path,
     confusion = Counter()
     by_language: dict[str, Counter] = defaultdict(Counter)
     checked = 0
-    with original_input.open("r", encoding="utf-8") as source:
-        for number, line in enumerate(source, 1):
-            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+    from .core import iter_hashed_lines
+
+    lines = 0
+    with original_input.open("rb") as source:
+        for number, (_, digest) in enumerate(
+            iter_hashed_lines(source, 1024 * 1024), 1
+        ):
+            lines = number
             if number in rejected and rejected[number] != digest:
                 raise ValueError("audit line hash mismatch with input")
             if number in labels:
@@ -204,7 +209,6 @@ def evaluate_filter(snapshot: Path, original_input: Path, gold_path: Path,
                 confusion[key] += 1
                 by_language[lang][key] += 1
                 checked += 1
-        lines = number if 'number' in locals() else 0
     if lines != manifest["totals"].get("lines") or checked != len(labels):
         raise ValueError("raw input line count or human-label coverage mismatch")
     if sum(manifest["accepted_splits"].values()) + len(rejected) != lines:

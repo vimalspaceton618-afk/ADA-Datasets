@@ -1,6 +1,43 @@
 # ADA-Datasets
 
-**ADA Curator v0.1 — the ARcHi provenance-first training data workbench.**
+**ADA Curator v0.4 — the ARcHi provenance-first training data workbench.**
+
+Curate approved English, Tamil and Hindi JSONL on private Linux workers and
+publish a verified training release for ADA. The v0.4 release contains typed
+Parquet documents and packed token blocks, a pinned byte-level BPE tokenizer,
+a dataset card and content-free rejection and revocation evidence.
+
+## Build and verify a training release
+
+```sh
+python -m pip install -e '.[release]'
+python examples/make_release_fixture.py --output-dir .runs/fixture
+ada-curate governance --status .runs/status.json init
+ada-curate release --recipe .runs/fixture/recipe.json \
+  --work-dir .runs/work --output .runs/release --workers 2 \
+  --status .runs/status.json
+ada-curate verify --output .runs/release
+```
+
+The fixture is synthetic and exercises all three splits. Pass the release's
+manifest SHA-256 and the private status registry to the ADA trainer. To use
+remote workers, initialize the job with `release --prepare-only`, run one
+`worker` task per input shard, and finalize with `release --workers 0`.
+Repeat with the same work directory to resume from verified task receipts.
+The shared filesystem must support Linux file locks and atomic publication.
+See the [private worker runbook](docs/RELEASE_OPERATIONS.md) for source
+approval, worker recovery, trainer handoff and revocation.
+Use [notebook_testing_arena](notebooks/notebook_v0.4.ipynb) to run the fixture
+interactively. The [v0.4 report](docs/V0.4_REPORT.md) records validation and
+the remaining pilot gates.
+
+Optional local language and quality models are supplied with checksums and
+reviewed licenses. Install the `models` extra on Python 3.10–3.12 to use them. The candidate
+Wikimedia pilot requires approval of the pinned source terms, independently
+labeled evaluation data and access to a private GPU. CI verifies the software
+with synthetic data.
+
+## Reference JSONL workflow
 
 This is an original, locally executable Python pipeline for curating **licensed
 and operator-approved** language-model training records, built for the ADA model
@@ -105,8 +142,8 @@ v0.2: source registries and audit DB, consent/removal propagation, language ID,
 language-calibrated filters, domain labels, contamination reports.
 v0.3: sharded/distributed dedup, multilingual/multimodal curation,
 model-based quality filters and deterministic resume.
-v0.4: human-rated controlled ablations, blending, tokenization and native ADA
-training data contracts.
+v0.4: resumable curation, native ADA training releases and a controlled pilot
+recipe. Real-data evaluations and hardware-scale measurements remain open.
 
 ## Intellectual property
 

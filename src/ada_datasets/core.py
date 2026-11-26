@@ -23,12 +23,13 @@ import shutil
 import sqlite3
 import tempfile
 import unicodedata
+from typing import BinaryIO, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
 from .language import script_consistent
 from .lid import accepted_prediction
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 WORDS = re.compile(r"\w+", re.UNICODE)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?!\w)")
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\s().-]?){10,15}(?!\d)")
@@ -83,6 +84,48 @@ def file_digest(path: Path | None) -> str | None:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def iter_hashed_lines(
+    stream: BinaryIO, max_bytes: int, *, input_hasher=None,
+) -> Iterator[tuple[bytes | None, str]]:
+    """Yield bounded physical JSONL records and their byte-exact SHA-256.
+
+    An oversized line is read incrementally and represented by None. Its digest
+    still includes every byte, including the line ending when present.
+    """
+    while chunk := stream.readline(max_bytes + 1):
+        if input_hasher is not None:
+            input_hasher.update(chunk)
+        if len(chunk) <= max_bytes:
+            yield chunk, digest(chunk)
+            continue
+        line_hasher = sha256(chunk)
+        while not chunk.endswith(b"\n"):
+            chunk = stream.readline(1024 * 1024)
+            if not chunk:
+                break
+            line_hasher.update(chunk)
+            if input_hasher is not None:
+                input_hasher.update(chunk)
+        yield None, line_hasher.hexdigest()
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    record = {}
+    for key, value in pairs:
+        if key in record:
+            raise ValueError("duplicate JSON key")
+        record[key] = value
+    return record
+
+
+def _invalid_json_constant(_: str):
+    raise ValueError("nonfinite JSON value")
+
+
+def strict_json(data: str) -> object:
+    return json.loads(data, object_pairs_hook=_unique_object, parse_constant=_invalid_json_constant)
 
 
 def canonical_text(text: str) -> str:
@@ -249,12 +292,24 @@ class NearIndex:
 
 def load_policy(path: Path) -> dict[str, dict]:
     """Schema v1 legacy or v2 explicit attestation (not automatic legal proof)."""
-    config = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(config, dict) or config.get("schema_version") not in (1, 2) or not isinstance(config.get("sources"), list):
+    return parse_policy(path.read_bytes())
+
+
+def parse_policy(data: bytes) -> dict[str, dict]:
+    try:
+        config = strict_json(data.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("invalid source policy JSON") from exc
+    if (
+        not isinstance(config, dict)
+        or type(config.get("schema_version")) is not int
+        or config["schema_version"] not in (1, 2)
+        or not isinstance(config.get("sources"), list)
+    ):
         raise ValueError("policy must have schema_version 1 or 2 and sources array")
     version = config["schema_version"]
     sources = {}
-    for entry in config["sources"]:
+    for item_number, entry in enumerate(config["sources"], 1):
         if not isinstance(entry, dict):
             raise ValueError("each source policy must be an object")
         source_id = entry.get("source_id")
@@ -263,7 +318,7 @@ def load_policy(path: Path) -> dict[str, dict]:
                 entry.get("rights_basis") not in (
                     "owned", "licensed", "public_domain", "open_dataset_approved"
                 ) or type(entry.get("training_allowed")) is not bool):
-            raise ValueError(f"invalid or duplicate policy source: {source_id!r}")
+            raise ValueError(f"invalid or duplicate policy source at entry {item_number}")
         if version == 2 and entry["training_allowed"]:
             review = entry.get("review")
             if (not isinstance(review, dict) or
@@ -279,12 +334,12 @@ def load_policy(path: Path) -> dict[str, dict]:
                     "pretraining" not in entry["allowed_uses"] or
                     not all(isinstance(x, str) for x in entry["allowed_uses"]) or
                     "retention_until" not in entry):
-                raise ValueError(f"v2 approved source {source_id!r} needs review evidence, scope and retention")
+                raise ValueError(f"v2 approved source at entry {item_number} needs review evidence, scope and retention")
             date.fromisoformat(review["reviewed_at"])
             expiry = entry["retention_until"]
             if expiry is not None:
                 if not isinstance(expiry, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expiry):
-                    raise ValueError(f"invalid retention_until for {source_id!r}")
+                    raise ValueError(f"invalid retention_until at entry {item_number}")
                 date.fromisoformat(expiry)
         sources[source_id] = {**entry, "_schema_version": version}
     return sources
@@ -308,7 +363,7 @@ def read_holdout(path: Path | None, limit: int) -> tuple[set[str], list[frozense
             if n >= limit:
                 raise ValueError("holdout record cap exceeded")
             record = json.loads(line)
-            if not isinstance(record.get("text"), str):
+            if not isinstance(record, dict) or not isinstance(record.get("text"), str):
                 raise ValueError("holdout record requires text")
             text = canonical_text(record["text"])
             exact.add(fingerprint(text))
@@ -346,7 +401,7 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                                            Path(output_dir))
     if not input_path.is_file() or not policy_path.is_file():
         raise FileNotFoundError("input JSONL and source policy must both exist")
-    if output_dir.exists():
+    if os.path.lexists(output_dir):
         raise FileExistsError(f"refusing to overwrite {output_dir}")
     lid_meta = None
     if language_identifier is not None:
@@ -357,7 +412,9 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                 not isinstance(lid_meta.get("model_sha256"), str) or
                 not re.fullmatch(r"[0-9a-f]{64}", lid_meta["model_sha256"])):
             raise ValueError("language identifier requires a pinned licensed model")
-    sources = load_policy(policy_path)
+    policy_bytes = policy_path.read_bytes()
+    policy_sha256 = digest(policy_bytes)
+    sources = parse_policy(policy_bytes)
     if config.commercial_use and any(
         p["_schema_version"] != 2 and p["training_allowed"]
         for p in sources.values()
@@ -366,6 +423,8 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
     if any(policy.get("_schema_version") == 2 and policy["training_allowed"]
            for policy in sources.values()) and config.as_of_date is None:
         raise ValueError("schema v2 requires an explicit --as-of-date for reproducible rights expiry checks")
+    holdout_sha256 = file_digest(holdout_path)
+    denylist_sha256 = file_digest(denylist_path)
     denied_ids, denied_hashes = read_denylist(denylist_path)
     holdout_exact, holdout_shingles = read_holdout(
         holdout_path, config.max_holdout_records)
@@ -374,23 +433,29 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
     stats = Counter()
     accepted_by_split = Counter()
     index = None
+    input_hasher = sha256()
     try:
         index = NearIndex(stage / "scratch.sqlite", config.seed)
-        with (input_path.open("r", encoding="utf-8") as source,
+        with (input_path.open("rb") as source,
               (stage / "train.jsonl").open("w", encoding="utf-8") as train,
               (stage / "validation.jsonl").open("w", encoding="utf-8") as validation,
               (stage / "test.jsonl").open("w", encoding="utf-8") as test,
               (stage / "audit.jsonl").open("w", encoding="utf-8") as audit):
             streams = {"train": train, "validation": validation, "test": test}
-            for number, line in enumerate(source, 1):
+            for number, (raw_line, line_hash) in enumerate(
+                iter_hashed_lines(source, config.max_chars * 20, input_hasher=input_hasher),
+                1,
+            ):
                 stats["lines"] += 1
                 source_id = None
-                line_hash = digest(line.encode("utf-8"))
                 reason = None
                 try:
+                    if raw_line is None:
+                        raise ValueError("record_too_large")
+                    line = raw_line.decode("utf-8")
                     if len(line) > config.max_chars * 5:
                         raise ValueError("record_too_large")
-                    row = json.loads(line)
+                    row = strict_json(line)
                     if not isinstance(row, dict):
                         raise ValueError("invalid_record")
                     source_id = row.get("source_id")
@@ -450,14 +515,15 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                             score, features = score_text(text)
                             if score < config.min_quality:
                                 reason = "low_quality"
-                            elif sha in holdout_exact or any(
-                                jaccard(shingles(text), h) >= config.min_near_jaccard
-                                for h in holdout_shingles
-                            ):
-                                reason = "benchmark_contamination"
                             else:
                                 items = shingles(text)
-                                reason = index.check(sha, items, config.min_near_jaccard)
+                                if sha in holdout_exact or any(
+                                    jaccard(items, h) >= config.min_near_jaccard
+                                    for h in holdout_shingles
+                                ):
+                                    reason = "benchmark_contamination"
+                                else:
+                                    reason = index.check(sha, items, config.min_near_jaccard)
                                 if reason is None:
                                     index.add(sha, items)
                                     family = row.get("family_id")
@@ -487,7 +553,9 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
                                     write_jsonl(streams[split], output)
                                     accepted_by_split[split] += 1
                                     stats["accepted"] += 1
-                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                except UnicodeDecodeError:
+                    reason = "invalid_utf8"
+                except (ValueError, TypeError, RecursionError) as exc:
                     reason = str(exc) if str(exc) in (
                         "record_too_large", "invalid_record", "invalid_url",
                         "too_long", "pii_or_secret_metadata") else "invalid_json_or_metadata"
@@ -503,15 +571,24 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
         index.close()
         index = None
         (stage / "scratch.sqlite").unlink()
+        input_sha256 = input_hasher.hexdigest()
+        for path, expected, label in (
+            (input_path, input_sha256, "input"),
+            (policy_path, policy_sha256, "policy"),
+            (holdout_path, holdout_sha256, "holdout"),
+            (denylist_path, denylist_sha256, "denylist"),
+        ):
+            if file_digest(path) != expected:
+                raise ValueError(f"{label} changed during curation")
         manifest = {
             "schema_version": 1,
             "curator_version": VERSION,
             "algorithm": "ADA-Provenance-Lattice-v0.3",
             "language_model": lid_meta,
-            "input_sha256": file_digest(input_path),
-            "policy_sha256": file_digest(policy_path),
-            "holdout_sha256": file_digest(holdout_path),
-            "denylist_sha256": file_digest(denylist_path),
+            "input_sha256": input_sha256,
+            "policy_sha256": policy_sha256,
+            "holdout_sha256": holdout_sha256,
+            "denylist_sha256": denylist_sha256,
             "configuration": asdict(config),
             "totals": dict(sorted(stats.items())),
             "accepted_splits": {s: accepted_by_split[s] for s in streams},
@@ -529,6 +606,8 @@ def curate_dataset(input_path: Path, policy_path: Path, output_dir: Path, *,
         (stage / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8")
+        if os.path.lexists(output_dir):
+            raise FileExistsError(f"refusing to overwrite {output_dir}")
         os.rename(stage, output_dir)
         return manifest
     finally:
