@@ -27,6 +27,9 @@ Repeat with the same work directory to resume from verified task receipts.
 The shared filesystem must support Linux file locks and atomic publication.
 See the [private worker runbook](docs/RELEASE_OPERATIONS.md) for source
 approval, worker recovery, trainer handoff and revocation.
+Use [notebook_testing_arena](notebooks/notebook_v0.4.ipynb) to run the fixture
+interactively. The [v0.4 report](docs/V0.4_REPORT.md) records validation and
+the remaining pilot gates.
 
 Optional local language and quality models are supplied with checksums and
 reviewed licenses. Install the `models` extra on Python 3.10–3.12 to use them. The candidate
