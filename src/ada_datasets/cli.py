@@ -10,9 +10,18 @@ import sys
 from .core import CurationConfig, curate_dataset, file_digest
 
 
-def validate_output(directory: Path) -> dict:
+def validate_output(directory: Path, expected_manifest_sha256: str | None = None) -> dict:
     manifest_file = directory / "manifest.json"
-    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    if manifest_file.is_symlink() or not manifest_file.is_file():
+        raise ValueError("missing regular manifest")
+    raw = manifest_file.read_bytes()
+    manifest_sha256 = sha256(raw).hexdigest()
+    if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
+        raise ValueError("manifest digest mismatch")
+    manifest = json.loads(raw)
+    if manifest.get("schema_version") == 2:
+        from .release import verify_release
+        return verify_release(directory, manifest_sha256)
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported manifest schema")
     expected = {"train.jsonl", "validation.jsonl", "test.jsonl", "audit.jsonl"}
@@ -82,7 +91,7 @@ def validate_output(directory: Path) -> dict:
     return {
         "valid": True,
         "docs": len(splits),
-        "manifest_sha256": file_digest(manifest_file),
+        "manifest_sha256": manifest_sha256,
         "curator_version": manifest["curator_version"],
     }
 
@@ -150,6 +159,29 @@ def main(argv: list[str] | None = None) -> int:
 
     verify = sub.add_parser("verify", help="verify immutable manifest/output integrity")
     verify.add_argument("--output", type=Path, required=True)
+    verify.add_argument("--expected-manifest-sha256")
+
+    release = sub.add_parser("release", help="publish or resume a verified ADA training release")
+    release.add_argument("--recipe", type=Path, required=True)
+    release.add_argument("--work-dir", type=Path, required=True)
+    release.add_argument("--output", type=Path, required=True)
+    release.add_argument("--workers", type=int, default=1,
+                         help="local workers; set to zero to use completed remote tasks")
+    release.add_argument("--prepare-only", action="store_true",
+                         help="initialize pinned tasks for external workers")
+    release.add_argument("--parent", type=Path, help="verified release to revoke and supersede")
+    release.add_argument("--status", type=Path, help="private initialized governance registry")
+
+    worker = sub.add_parser("worker", help="run one resumable curation task")
+    worker.add_argument("--work-dir", type=Path, required=True)
+    worker.add_argument("--task-id", type=int, required=True)
+
+    from .release_assessment import add_assessment_parser
+    from .release_governance import add_governance_commands
+    from .quality_training import add_quality_training_parser
+    add_assessment_parser(sub)
+    add_governance_commands(sub)
+    add_quality_training_parser(sub)
 
     hf = sub.add_parser("adapt-hf", help="approved and bounded Hugging Face streaming adapter")
     hf.add_argument("--sources", type=Path, required=True)
@@ -167,7 +199,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "verify":
-            result = validate_output(args.output)
+            result = validate_output(args.output, args.expected_manifest_sha256)
+        elif args.command == "release":
+            from .release import run_release
+            result = run_release(args.recipe, args.work_dir, args.output,
+                                 workers=args.workers, prepare_only=args.prepare_only,
+                                 parent=args.parent, status=args.status)
+        elif args.command == "worker":
+            from .release import run_worker
+            result = run_worker(args.work_dir, args.task_id)
+        elif args.command == "governance":
+            from .release_governance import run_governance_command
+            result = run_governance_command(args)
+        elif args.command == "assess-release":
+            from .release_assessment import assess_release_cli
+            result = assess_release_cli(args)
+        elif args.command == "train-quality":
+            from .quality_training import run_quality_training
+            result = run_quality_training(args)
         elif args.command == "revoke":
             from .lineage import revoke_snapshot
             result = revoke_snapshot(args.parent, args.tombstones, args.output)

@@ -7,6 +7,7 @@ until run through ADA Curator.
 from __future__ import annotations
 
 from hashlib import sha256
+from itertools import islice
 import os
 import re
 import tempfile
@@ -21,7 +22,7 @@ def adapt_hf(args) -> dict:
         raise ValueError("max-rows must be 1..100000 in v0.1")
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.revision):
         raise ValueError("pin an exact 40-hex-character Hugging Face revision")
-    if args.output.exists():
+    if os.path.lexists(args.output):
         raise FileExistsError("refusing to overwrite existing raw export")
     policies = load_policy(args.sources)
     policy = policies.get(args.source_id)
@@ -44,14 +45,15 @@ def adapt_hf(args) -> dict:
     fd, temporary = tempfile.mkstemp(prefix=".ada-hf-", suffix=".jsonl",
                                     dir=args.output.parent)
     count = 0
+    scanned = 0
+    scan_limit = args.max_rows * 10
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             ds = load_dataset(args.dataset_id, name=args.config, split=args.split,
                               revision=args.revision, streaming=True)
-            for record in ds:
-                if count == args.max_rows:
-                    break
-                if not isinstance(record.get("text"), str):
+            for record in islice(ds, scan_limit):
+                scanned += 1
+                if not isinstance(record, dict) or not isinstance(record.get("text"), str):
                     continue
                 # Hash upstream identifiers so signed URLs and personal
                 # query parameters do not enter generated document IDs.
@@ -72,8 +74,11 @@ def adapt_hf(args) -> dict:
                     "family_id": document_id,
                 })
                 count += 1
-        os.rename(temporary, args.output)
-        return {"exported_rows": count, "path": str(args.output),
+                if count == args.max_rows:
+                    break
+        os.link(temporary, args.output)
+        return {"exported_rows": count, "scanned_rows": scanned, "scan_limit": scan_limit,
+                "path": str(args.output),
                 "status": "RAW_UNCURATED_REQUIRES_ADA_CURATE_RUN"}
     finally:
         if os.path.exists(temporary):

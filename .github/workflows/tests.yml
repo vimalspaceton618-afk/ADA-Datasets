@@ -50,3 +50,29 @@ jobs:
           ada-curate evaluate-filter --snapshot /tmp/ada-curator-ci --input examples/input.jsonl --gold /tmp/ada-filter-gold.jsonl --report /tmp/ada-filter-evaluation.json
       - name: Check Python syntax
         run: python -m compileall -q src
+  release-wheel-and-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and install release wheel
+        shell: bash
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python -m pip install "${wheels[0]}[release,models]"
+          python -c 'import fasttext, pyarrow, tokenizers'
+      - name: Exercise the installed release CLI
+        run: python -m unittest discover -s tests -v
+      - name: Upload verified wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ada-datasets-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
